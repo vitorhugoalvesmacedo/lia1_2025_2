@@ -1,0 +1,171 @@
+# =========================================================
+# Imports
+# =========================================================
+import kagglehub
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import seaborn as sns
+import cv2
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix
+
+import tensorflow as tf
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras import models, layers
+from tensorflow.keras.optimizers import Adam
+
+from PIL import Image
+from google.colab import files  # para upload de imagem externa no Colab
+
+# =========================================================
+# 1. Carregando os dados
+# =========================================================
+iasadpanwhar_parking_lot_detection_counter_path = kagglehub.dataset_download('iasadpanwhar/parking-lot-detection-counter')
+
+empty = [iasadpanwhar_parking_lot_detection_counter_path + '/parking/clf-data/empty']
+not_empty = [iasadpanwhar_parking_lot_detection_counter_path + '/parking/clf-data/not_empty']
+
+file_p, labels = [], []
+nomes_classes = ['empty', 'not_empty']
+dict_lists = [empty, not_empty]
+
+for i, dir_list in enumerate(dict_lists):
+    for j in dir_list:
+        list_f = os.listdir(j)
+        for name in list_f:
+            fpath = os.path.join(j, name)
+            file_p.append(fpath)
+            labels.append(nomes_classes[i])
+
+df = pd.DataFrame({"filepaths": file_p, "labels": labels})
+
+# Split dataset
+train_df, test_df = train_test_split(df, test_size=0.2, random_state=42, stratify=df.labels)
+train_df, val_df = train_test_split(train_df, test_size=0.3, random_state=42, stratify=train_df.labels)
+
+print("Treino:", train_df.shape)
+print("Validação:", val_df.shape)
+print("Teste:", test_df.shape)
+
+# =========================================================
+# 2. Pré-processamento e visualização
+# =========================================================
+image_gen = ImageDataGenerator(rescale=1./255)
+
+train = image_gen.flow_from_dataframe(
+    dataframe=train_df, x_col="filepaths", y_col="labels",
+    target_size=(64, 64), color_mode='rgb',
+    class_mode="categorical", batch_size=16, shuffle=True
+)
+
+val = image_gen.flow_from_dataframe(
+    dataframe=val_df, x_col="filepaths", y_col="labels",
+    target_size=(64, 64), color_mode='rgb',
+    class_mode="categorical", batch_size=16, shuffle=False
+)
+
+test = image_gen.flow_from_dataframe(
+    dataframe=test_df, x_col="filepaths", y_col="labels",
+    target_size=(64, 64), color_mode='rgb',
+    class_mode="categorical", batch_size=16, shuffle=False
+)
+
+# Visualização de algumas imagens
+def visualiza_imagens(data_gen):
+    plt.figure(figsize=(10,10))
+    images, labels = next(data_gen)
+    # Modify the loop to iterate up to the batch size
+    for i in range(images.shape[0]):
+        plt.subplot(5, 5, i+1)
+        plt.xticks([])
+        plt.yticks([])
+        plt.grid(False)
+        plt.imshow(images[i])
+        plt.xlabel(nomes_classes[np.argmax(labels[i])])
+    plt.show()
+
+visualiza_imagens(train)
+
+# =========================================================
+# 3. Construção do Modelo (CNN simples)
+# =========================================================
+modelo_parking = models.Sequential()
+
+modelo_parking.add(layers.Input(shape=(64, 64, 3)))
+
+modelo_parking.add(layers.Conv2D(32, (3,3), activation='relu'))
+modelo_parking.add(layers.MaxPooling2D((2,2)))
+
+modelo_parking.add(layers.Conv2D(64, (3,3), activation='relu'))
+modelo_parking.add(layers.MaxPooling2D((2,2)))
+
+modelo_parking.add(layers.Conv2D(128, (3,3), activation='relu'))
+modelo_parking.add(layers.MaxPooling2D((2,2)))
+
+modelo_parking.add(layers.Flatten())
+modelo_parking.add(layers.Dense(128, activation='relu'))
+modelo_parking.add(layers.Dropout(0.5))
+modelo_parking.add(layers.Dense(2, activation='softmax'))
+
+modelo_parking.compile(optimizer=Adam(),
+                       loss='categorical_crossentropy',
+                       metrics=['accuracy'])
+
+modelo_parking.summary()
+
+# =========================================================
+# 4. Treinamento
+# =========================================================
+history = modelo_parking.fit(train,
+                             epochs=1,
+                             validation_data=val)
+
+# =========================================================
+# 5. Avaliação
+# =========================================================
+erro_teste, acc_teste = modelo_parking.evaluate(test, verbose=2)
+print('\nAcurácia com dados de Teste:', acc_teste)
+
+# Matriz de confusão
+y_pred = modelo_parking.predict(test)
+y_pred_classes = np.argmax(y_pred, axis=1)
+y_true = test.classes
+
+cm = confusion_matrix(y_true, y_pred_classes)
+
+plt.figure(figsize=(6,6))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=nomes_classes,
+            yticklabels=nomes_classes)
+plt.title('Matriz de Confusão - Parking Lot')
+plt.xlabel('Previsto')
+plt.ylabel('Real')
+plt.show()
+
+# =========================================================
+# 6. Deploy - Upload de Nova Imagem
+# =========================================================
+print("Faça upload de uma imagem para classificação:")
+uploaded = files.upload()
+
+for fn in uploaded.keys():
+    nova_imagem = Image.open(fn).convert("RGB")
+    nova_imagem = nova_imagem.resize((64,64))
+
+    plt.figure(figsize=(2,2))
+    plt.imshow(nova_imagem)
+    plt.xticks([])
+    plt.yticks([])
+    plt.show()
+
+    nova_imagem_array = np.array(nova_imagem) / 255.0
+    nova_imagem_array = np.expand_dims(nova_imagem_array, axis=0)
+
+    previsoes = modelo_parking.predict(nova_imagem_array)
+    classe_prevista = np.argmax(previsoes)
+    nome_classe_prevista = nomes_classes[classe_prevista]
+
+    print("A nova imagem foi classificada como:", nome_classe_prevista)
