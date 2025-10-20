@@ -1,0 +1,94 @@
+import streamlit as st
+import pandas as pd
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.seasonal import seasonal_decompose
+import matplotlib.pyplot as plt
+from datetime import date
+
+st.set_page_config(page_title="Previsão Solar Goiás", layout="wide")
+
+st.title("☀️ Estimativa de Irradiação Solar e Economia Fotovoltaica – Goiás")
+
+with st.sidebar:
+    st.header("⚙️ Parâmetros de Entrada")
+    uploaded_file = st.file_uploader("Escolha o arquivo de irradiância (Excel):", type=['xlsx'])
+    start_date = st.date_input("Período inicial da série", date(2015, 1, 1))
+    forecast_months = st.number_input("Meses para previsão", min_value=1, max_value=24, value=12)
+    potencia_kwp = st.number_input("Potência do sistema (kWp)", min_value=0.1, value=5.0, step=0.1)
+    preco_kwh = st.number_input("Custo do kWh (R$/kWh)", min_value=0.1, value=0.90, step=0.05)
+    eficiencia = 0.80  # Eficiência fixa (80%)
+    processar = st.button("Processar")
+
+if uploaded_file and processar:
+    try:
+        # --- Leitura e tratamento do arquivo ---
+        df = pd.read_excel(uploaded_file)
+        df = df.dropna(how='all')  # remove linhas vazias
+        df.columns = df.columns.str.strip()
+
+        # --- Conversão para números e cálculo da média estadual ---
+        df = df.apply(pd.to_numeric, errors='coerce') 
+        df['Media_Estadual'] = df.mean(axis=1, skipna=True)
+
+
+        # Criação da série temporal (mensal)
+        ts_data = pd.Series(df['Media_Estadual'].values,
+                            index=pd.date_range(start=start_date, periods=len(df), freq='M'))
+
+        # --- Decomposição da série ---
+        decompose = seasonal_decompose(ts_data, model='additive')
+        fig_decompose = decompose.plot()
+        fig_decompose.set_size_inches(10, 8)
+
+        # --- Modelo SARIMA para previsão ---
+        model = SARIMAX(ts_data, order=(2, 0, 0), seasonal_order=(0, 1, 1, 12))
+        model_fit = model.fit()
+        forecast = model_fit.forecast(steps=forecast_months)
+
+        # --- Cálculo da energia gerada e economia ---
+        energia_gerada = forecast * 30 * potencia_kwp * eficiencia
+        economia_reais = energia_gerada * preco_kwh
+
+        # --- Gráfico de previsão da irradiância ---
+        fig_forecast, ax = plt.subplots(figsize=(10, 5))
+        ts_data.plot(ax=ax, label='Histórico')
+        forecast.plot(ax=ax, style='r--', label='Previsão')
+        ax.set_title("Previsão da Irradiação Média no Estado de Goiás")
+        ax.legend()
+
+        # --- Exibição dos resultados ---
+        col1, col2 = st.columns([2, 2])
+
+        with col1:
+            st.subheader("📊 Decomposição da Série Temporal")
+            st.pyplot(fig_decompose)
+
+        with col2:
+            st.subheader("🔮 Previsão da Irradiação Média")
+            st.pyplot(fig_forecast)
+
+        # --- Tabela de resultados ---
+        resultados = pd.DataFrame({
+            "Mês": forecast.index.strftime("%b/%Y"),
+            "Irradiação Média (kWh/m²/dia)": forecast.round(2),
+            "Energia Gerada (kWh/mês)": energia_gerada.round(2),
+            "Economia Estimada (R$)": economia_reais.round(2)
+        })
+
+        st.subheader("💰 Estimativa Mensal de Geração e Economia")
+        st.dataframe(resultados, use_container_width=True)
+
+        # --- Gráfico de barras da economia ---
+        fig_bar, ax = plt.subplots(figsize=(8, 4))
+        ax.bar(resultados["Mês"], resultados["Economia Estimada (R$)"])
+        ax.set_title("Economia Mensal Estimada (R$)")
+        ax.set_ylabel("R$")
+        ax.set_xticklabels(resultados["Mês"], rotation=45)
+        st.pyplot(fig_bar)
+
+        st.success("✅ Análise concluída com sucesso!")
+
+    except Exception as ex:
+        st.error(f"Erro ao processar os dados: {ex}")
+
+#streamlit run app_irradiancia_goias.py
